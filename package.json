@@ -1,0 +1,14 @@
+{
+  "name": "hn-ai-digest",
+  "version": "1.0.0",
+  "description": "Top AI news from Hacker News, filtered by community excitement",
+  "main": "index.ts",
+  "scripts": {
+    "start": "bun run index.ts"
+  },
+  "type": "module",
+  "dependencies": {
+    "@mozilla/readability": "^0.6.0",
+    "jsdom": "^27.4.0"
+  }
+}

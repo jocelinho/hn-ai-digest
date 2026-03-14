@@ -1,2 +1,6 @@
 node_modules/
 .DS_Store
+
+*.db
+reprocess-*.ts
+news-with-cache.ts

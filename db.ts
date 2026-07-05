@@ -1,7 +1,11 @@
 import { Database } from "bun:sqlite";
 import path from "path";
 
-const DB_PATH = path.join(import.meta.dir, "processed-articles.db");
+// DB location is configurable so the skill stays portable across machines.
+// - unset (default): a local cache next to this script (auto-created, gitignored)
+// - HN_DIGEST_DB_PATH=/some/synced/path.db: share state across laptops
+// - HN_DIGEST_DB_PATH=":memory:": fully stateless, fresh every run
+const DB_PATH = process.env.HN_DIGEST_DB_PATH || path.join(import.meta.dir, "processed-articles.db");
 
 export interface ProcessedArticle {
   hn_id: number;

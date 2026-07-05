@@ -49,6 +49,16 @@ cd hn-ai-digest
 bun install
 ```
 
+### Configuration (optional)
+
+Everything works with zero config. All knobs are env vars with sensible defaults — see `.env.example`:
+
+| Var | Default | Purpose |
+|---|---|---|
+| `HN_AI_DIGEST_DIR` | `~/Documents/Jocelin/Projects/hn-ai-digest` | Repo location (used by the Claude Code News skill to find this script) |
+| `HN_DIGEST_DB_PATH` | `processed-articles.db` next to the script | Cache DB. Set to `:memory:` for stateless runs, or a synced path to share dedup across machines |
+| `ARTICLE_READER_API` | `https://article-reader.pages.dev` | Summarization service base URL |
+
 ### Usage
 
 ```bash

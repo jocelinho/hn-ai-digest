@@ -10,6 +10,10 @@
 
 import { articleDb, ProcessedArticle } from "./db";
 
+// Downstream summarization service. Override via env to point at a different
+// deployment (e.g. local dev) without touching code.
+const ARTICLE_READER_API = process.env.ARTICLE_READER_API ?? "https://article-reader.pages.dev";
+
 interface OutputArticle {
   rank: number;
   title: string;
@@ -92,7 +96,7 @@ async function main() {
     console.error(`[${article.rank}/${hnArticles.length}] Processing: ${article.title}`);
 
     try {
-      const response = await fetch('https://article-reader.pages.dev/api/article', {
+      const response = await fetch(`${ARTICLE_READER_API}/api/article`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

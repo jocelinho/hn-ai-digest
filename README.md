@@ -6,16 +6,19 @@ Top AI news from Hacker News, filtered by community excitement. Fetches trending
 
 ```
 Hacker News API → Filter by AI keywords → Rank by excitement score
-→ Extract content (Readability) → Cache in SQLite → Send to Article Reader API
+→ Dedup against Cloudflare D1 → Extract content (Readability) → Send to Article Reader API
 ```
 
-1. Pulls the top 100 stories from Hacker News
-2. Filters for AI-related content using 18+ keyword patterns (OpenAI, Anthropic, Claude, LLM, etc.)
-3. Ranks by **excitement score**: velocity (points/hour) + engagement + popularity
-4. Extracts readable article text via Mozilla Readability (falls back to top HN comments)
-5. Caches results in SQLite to avoid reprocessing
-6. Posts to Article Reader API for AI summarization and enhanced formatting
-7. Returns top 3 articles as JSON
+1. Queries Article Reader (`GET /api/hn-digest?date=today`) — if ≥3 picks already exist for today, returns them
+2. Otherwise pulls the top 100 stories from Hacker News
+3. Filters for AI-related content using 18+ keyword patterns (OpenAI, Anthropic, Claude, LLM, etc.)
+4. Ranks by **excitement score**: velocity (points/hour) + engagement + popularity
+5. Skips stories already picked recently (dedup set from `GET /api/hn-digest?since=...`)
+6. Extracts readable article text via Mozilla Readability (falls back to top HN comments)
+7. Posts to Article Reader API for summarization — which also records the pick in D1
+8. Returns top 3 articles as JSON
+
+**Stateless:** all state lives in the Article Reader Cloudflare D1, so it runs identically on any machine — no local database, no sync.
 
 ## Features
 
@@ -23,7 +26,7 @@ Hacker News API → Filter by AI keywords → Rank by excitement score
 - **Excitement scoring** — Combines velocity, comment engagement, and raw score into a single ranking metric
 - **Content extraction** — Mozilla Readability pulls clean article text from any URL
 - **Comment fallback** — If an article is paywalled or inaccessible, uses top HN comments instead
-- **Database caching** — SQLite tracks processed articles by date to prevent duplicates
+- **Stateless dedup** — dedup + daily cache queried from Cloudflare D1 (`/api/hn-digest`); no local database
 - **Why picked** — Generates human-readable explanations for why each article was selected
 - **Article Reader integration** — Sends articles for AI summarization with bilingual support
 
@@ -31,7 +34,7 @@ Hacker News API → Filter by AI keywords → Rank by excitement score
 
 - **Bun** — Runtime and package manager
 - **TypeScript** — All source files
-- **SQLite** (via `bun:sqlite`) — Local article cache
+- **Cloudflare D1** (via Article Reader `/api/hn-digest`) — server-side digest state
 - **Mozilla Readability + jsdom** — Content extraction
 - **Article Reader API** — Downstream AI processing
 
@@ -51,13 +54,13 @@ bun install
 
 ### Configuration (optional)
 
-Everything works with zero config. All knobs are env vars with sensible defaults — see `.env.example`:
+Everything works with zero config — it's stateless, state lives in Cloudflare D1. Env vars (see `.env.example`):
 
 | Var | Default | Purpose |
 |---|---|---|
-| `HN_AI_DIGEST_DIR` | `~/Documents/Jocelin/Projects/hn-ai-digest` | Repo location (used by the Claude Code News skill to find this script) |
-| `HN_DIGEST_DB_PATH` | `processed-articles.db` next to the script | Cache DB. Set to `:memory:` for stateless runs, or a synced path to share dedup across machines |
-| `ARTICLE_READER_API` | `https://article-reader.pages.dev` | Summarization service base URL |
+| `HN_AI_DIGEST_DIR` | — | Repo location (used by the Claude Code News skill to find this script); set per machine |
+| `ARTICLE_READER_API` | `https://article-reader.pages.dev` | Summarization + digest-state service base URL |
+| `HN_DIGEST_DEDUP_DAYS` | `14` | How many days back to dedup against previously-picked stories |
 
 ### Usage
 
@@ -65,19 +68,18 @@ Everything works with zero config. All knobs are env vars with sensible defaults
 # Fetch and rank AI articles from HN (raw output)
 bun run index.ts
 
-# Full pipeline with caching and Article Reader integration
+# Full pipeline with dedup, caching, and Article Reader integration
 bun run fetch-news.ts
 ```
 
-The database (`processed-articles.db`) is created automatically on first run.
+No local database — dedup and daily cache are read from Cloudflare D1 at runtime.
 
 ## Project Structure
 
 ```
 hn-ai-digest/
-├── index.ts           # Main HN fetcher — filters, ranks, extracts content
-├── fetch-news.ts      # Full pipeline with caching + Article Reader API
-├── db.ts              # SQLite database module (schema, queries, caching)
+├── index.ts           # HN fetcher — filters, ranks, extracts content (dedup set via env)
+├── fetch-news.ts      # Full pipeline: D1 cache/dedup + Article Reader API
 ├── package.json
 └── .gitignore
 ```

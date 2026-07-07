@@ -1,6 +1,12 @@
 import { JSDOM } from "jsdom";
 import { Readability } from "@mozilla/readability";
-import { articleDb, ProcessedArticle } from "./db";
+
+// Cross-day dedup set: HN story IDs already picked recently. Passed in by
+// fetch-news.ts (which reads them from Cloudflare D1). Empty when run standalone.
+const PROCESSED_HN_IDS = new Set(
+  (process.env.PROCESSED_HN_IDS ?? "")
+    .split(",").map(s => s.trim()).filter(Boolean).map(Number)
+);
 
 const HN_API = "https://hacker-news.firebaseio.com/v0";
 const MIN_CONTENT_LENGTH = 200;
@@ -184,34 +190,9 @@ function generateWhyPicked(item: HNItem, excitement: number, hoursAgo: number): 
 }
 
 async function getTopAIArticles(count = 3): Promise<RankedArticle[]> {
-  const today = articleDb.constructor.getTodayDate();
-
-  // Check if we already have today's articles cached
-  const cachedArticles = articleDb.getArticlesByDate(today);
-  if (cachedArticles.length >= count) {
-    console.error(`✅ Found ${cachedArticles.length} cached articles for ${today}`);
-
-    // Return cached articles in the expected format
-    // Note: We don't have the content stored, so we'll return empty content
-    // The News skill should just open the URLs without processing
-    return cachedArticles.map(article => ({
-      rank: article.rank,
-      title: article.title,
-      url: article.hn_url, // Use HN URL as placeholder
-      hn_url: article.hn_url,
-      score: article.score,
-      comments: article.comments,
-      excitement_score: article.excitement_score,
-      posted_hours_ago: 0, // Not stored, placeholder
-      content: "", // Empty, will be skipped
-      content_source: "article" as const,
-      why_picked: article.why_picked || "",
-      article_reader_url: article.article_reader_url,
-      article_reader_id: article.article_reader_id
-    }));
-  }
-
-  console.error(`🔍 No cached articles for ${today}, fetching from HN...`);
+  // Stateless: today's-cache is handled upstream in fetch-news.ts via Cloudflare.
+  // Here we just fetch, rank, and skip anything in the dedup set.
+  console.error(`🔍 Fetching top stories from HN...`);
 
   const topIds = await getTopStories(100);
   const items = await Promise.all(topIds.map(id => fetchItem<HNItem>(id)));
@@ -235,10 +216,9 @@ async function getTopAIArticles(count = 3): Promise<RankedArticle[]> {
   for (const entry of aiItems) {
     if (results.length >= count) break;
 
-    // Skip if already processed in previous days
-    if (articleDb.isArticleProcessed(entry.item.id)) {
-      const processedDate = articleDb.getArticleProcessedDate(entry.item.id);
-      console.error(`⏭️  Skipping "${entry.item.title}" (already processed on ${processedDate})`);
+    // Skip if already picked recently (dedup set from Cloudflare, via env)
+    if (PROCESSED_HN_IDS.has(entry.item.id)) {
+      console.error(`⏭️  Skipping "${entry.item.title}" (already in recent digest)`);
       skippedCount++;
       continue;
     }

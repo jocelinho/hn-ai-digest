@@ -1,0 +1,12 @@
+{
+  "name": "hn-news-slack",
+  "version": "1.0.0",
+  "description": "Daily HN AI/tech digest → Slack, on a Cloudflare cron trigger",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev --test-scheduled",
+    "tail": "wrangler tail"
+  }
+}

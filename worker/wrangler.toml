@@ -1,0 +1,15 @@
+name = "hn-news-slack"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+
+# 09:00 Asia/Taipei == 01:00 UTC, daily
+[triggers]
+crons = ["0 1 * * *"]
+
+[vars]
+ARTICLE_READER_API = "https://article-reader.pages.dev"
+HN_DIGEST_DEDUP_DAYS = "14"
+
+# Secrets (set via `wrangler secret put`, never committed):
+#   SLACK_WEBHOOK_URL  — the Slack incoming-webhook URL
+#   RUN_TOKEN          — token gating the manual-trigger HTTP endpoint

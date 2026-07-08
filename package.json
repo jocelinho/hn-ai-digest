@@ -1,10 +1,10 @@
 {
   "name": "hn-ai-digest",
   "version": "1.0.0",
-  "description": "Top AI news from Hacker News, filtered by community excitement",
-  "main": "index.ts",
+  "description": "Daily AI/tech digest — HN + OpenAI/TechCrunch/Verge/Ars + every.to, ranked and summarized",
+  "main": "fetch-news.ts",
   "scripts": {
-    "start": "bun run index.ts"
+    "start": "bun run fetch-news.ts"
   },
   "type": "module",
   "dependencies": {

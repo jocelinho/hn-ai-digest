@@ -204,43 +204,62 @@ function tldr(zh?: string, en?: string): string {
   const m = src.match(/TLDR[:：]\s*\**\s*(.+)/i);
   let line = m ? m[1] : src;
   line = line.replace(/\*\*/g, "").replace(/\s+/g, " ").trim();
-  return line.length > 240 ? line.slice(0, 237) + "…" : line;
+  return line.length > 200 ? line.slice(0, 197) + "…" : line;
+}
+
+/** Escape mrkdwn special chars in display text (not in URLs). */
+function esc(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/** Small grey metadata line: source · votes · comments · reading time · HN link. */
+function metaLine(a: TimelyOut): string {
+  const parts: string[] = [];
+  if (a.sourceLabel) parts.push(esc(a.sourceLabel));
+  if (a.score != null) parts.push(`⬆︎ ${a.score}`);
+  if (a.comments != null) parts.push(`💬 ${a.comments}`);
+  if (a.reading_time) parts.push(`📖 ${a.reading_time} min`);
+  if (a.hnUrl) parts.push(`<${a.hnUrl}|HN 討論>`);
+  return parts.length ? parts.join("   ·   ") : "—";
 }
 
 function slackBlocks(timely: TimelyOut[], evergreen: EvergreenOut[], date: string) {
   const blocks: any[] = [
-    { type: "header", text: { type: "plain_text", text: `🗞️ Top AI/Tech News — ${date}`, emoji: true } },
+    { type: "header", text: { type: "plain_text", text: "🗞️  今日 AI・科技新聞", emoji: true } },
+    { type: "context", elements: [{ type: "mrkdwn", text: `📅 ${date}` }] },
   ];
 
   if (timely.length) {
-    blocks.push({ type: "section", text: { type: "mrkdwn", text: "*🔥 今日即時*" } });
-    for (const a of timely) {
-      const summary = tldr(a.ai_summary_zh, a.ai_summary);
-      const links: string[] = [`📖 <${a.article_reader_url}|Read${a.reading_time ? ` ${a.reading_time}m` : ""}>`];
-      if (a.hnUrl) links.push(`💬 <${a.hnUrl}|HN${a.comments != null ? ` ${a.comments}` : ""}>`);
-      if (a.score != null) links.push(`⬆︎ ${a.score}`);
+    blocks.push({ type: "divider" });
+    blocks.push({ type: "section", text: { type: "mrkdwn", text: "🔥  *今日即時*" } });
+    timely.forEach((a, idx) => {
+      // Clickable bold title → the reader page; Chinese TLDR on its own line.
       blocks.push({
         type: "section",
-        text: { type: "mrkdwn", text: `*${a.rank}. ${a.title}*  ·  _${a.sourceLabel}_\n${summary}\n${links.join("  ·  ")}` },
+        text: { type: "mrkdwn", text: `*<${a.article_reader_url}|${a.rank}. ${esc(a.title)}>*\n${esc(tldr(a.ai_summary_zh, a.ai_summary))}` },
       });
-    }
+      // Metadata demoted to a small grey context line.
+      blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: metaLine(a) }] });
+      if (idx < timely.length - 1) blocks.push({ type: "divider" });
+    });
   }
 
   if (evergreen.length) {
     blocks.push({ type: "divider" });
-    blocks.push({ type: "section", text: { type: "mrkdwn", text: "*📖 深度精選 · every.to*" } });
+    blocks.push({ type: "section", text: { type: "mrkdwn", text: "📖  *深度精選*" } });
     for (const e of evergreen) {
-      const blurb = e.blurb ? `\n${e.blurb}` : "";
       blocks.push({
         type: "section",
-        text: { type: "mrkdwn", text: `*<${e.url}|${e.title}>*${blurb}` },
+        text: { type: "mrkdwn", text: `*<${e.url}|${esc(e.title)}>*${e.blurb ? `\n${esc(e.blurb)}` : ""}` },
       });
+      blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: "every.to   ·   點標題讀原文" }] });
     }
   }
 
+  blocks.push({ type: "divider" });
   blocks.push({
     type: "context",
-    elements: [{ type: "mrkdwn", text: "via hn-ai-digest · HN + OpenAI/TechCrunch/Verge/Ars + every.to" }],
+    elements: [{ type: "mrkdwn", text: "🤖 via hn-ai-digest · HN · OpenAI · TechCrunch · The Verge · Ars · every.to" }],
   });
   return { blocks };
 }
@@ -330,9 +349,15 @@ export default {
     if (url.searchParams.get("token") !== env.RUN_TOKEN) {
       return new Response("forbidden", { status: 403 });
     }
-    // Run in the background (like the cron) so slow summarization doesn't hit the
-    // HTTP response time limit; return immediately. ?force=1 bypasses today's cache.
     const force = url.searchParams.get("force") === "1";
+    // ?sync=1 awaits the digest and returns its status (use with the fast cache
+    // path; a forced fresh run can exceed the HTTP time limit).
+    if (url.searchParams.get("sync") === "1") {
+      const result = await runDigest(env, force);
+      return new Response(JSON.stringify(result) + "\n", { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    // Default: run in the background (like the cron) so slow summarization doesn't
+    // hit the HTTP response time limit; return immediately.
     ctx.waitUntil(runDigest(env, force));
     return new Response(`queued — digest running${force ? " (forced refresh)" : ""}, will post to Slack shortly\n`, { status: 202 });
   },

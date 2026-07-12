@@ -199,6 +199,10 @@ async function collectEvergreen(env: Env, exclude: Set<string>, today: string): 
 
 // ---------- Slack formatting ----------
 
+// Jocelin's Slack member ID — mentioned in the daily digest so it triggers a
+// push notification (plain bot messages only produce an unread badge).
+const MENTION = "<@U074AC11VNV>";
+
 function tldr(zh?: string, en?: string): string {
   const src = zh || en || "";
   const m = src.match(/TLDR[:：]\s*\**\s*(.+)/i);
@@ -226,7 +230,7 @@ function metaLine(a: TimelyOut): string {
 function slackBlocks(timely: TimelyOut[], evergreen: EvergreenOut[], date: string) {
   const blocks: any[] = [
     { type: "header", text: { type: "plain_text", text: "🗞️  今日 AI・科技新聞", emoji: true } },
-    { type: "context", elements: [{ type: "mrkdwn", text: `📅 ${date}` }] },
+    { type: "context", elements: [{ type: "mrkdwn", text: `📅 ${date} · ${MENTION}` }] },
   ];
 
   if (timely.length) {
@@ -261,7 +265,8 @@ function slackBlocks(timely: TimelyOut[], evergreen: EvergreenOut[], date: strin
     type: "context",
     elements: [{ type: "mrkdwn", text: "🤖 via hn-ai-digest · HN · OpenAI · TechCrunch · The Verge · Ars · every.to" }],
   });
-  return { blocks };
+  // Top-level text is the mobile/lock-screen notification preview.
+  return { text: `🗞️ 今日 AI・科技新聞 ${date} ${MENTION}`, blocks };
 }
 
 async function postToSlack(env: Env, payload: unknown): Promise<boolean> {

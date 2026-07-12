@@ -273,12 +273,31 @@ async function collectPeople(env: Env, exclude: Set<string>, today: string): Pro
 // push notification (plain bot messages only produce an unread badge).
 const MENTION = "<@U074AC11VNV>";
 
-function tldr(zh?: string, en?: string): string {
-  const src = zh || en || "";
-  const m = src.match(/TLDR[:：]\s*\**\s*(.+)/i);
-  let line = m ? m[1] : src;
-  line = line.replace(/\*\*/g, "").replace(/\s+/g, " ").trim();
-  return line.length > 200 ? line.slice(0, 197) + "…" : line;
+// Jocelin reads the Chinese summary in Slack and rarely clicks through, so the
+// message carries the FULL summary: TLDR line + key-takeaway bullets (the
+// ai_summary_zh format is "**TLDR：** ...\n\n**重點摘要：**\n- ...\n- ...").
+const MAX_SUMMARY_BULLETS = 4;
+
+function summaryText(zh?: string, en?: string): string {
+  const src = (zh || en || "").replace(/\s*---\s*$/, "").trim();
+  if (!src) return "";
+  const out: string[] = [];
+  let bullets = 0;
+  for (const raw of src.split("\n")) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (/^\**\s*(重點摘要|Key Takeaways?)/i.test(line)) continue; // section header
+    const b = line.match(/^[-•*]\s+(.*)$/);
+    if (b) {
+      if (bullets++ >= MAX_SUMMARY_BULLETS) continue;
+      out.push("• " + b[1].replace(/\*\*/g, "").trim());
+    } else {
+      out.push(line.replace(/\*\*/g, "").replace(/^TLDR[:：]\s*/i, "").trim());
+    }
+  }
+  // Slack section text hard limit is 3000 chars (incl. title line) — stay well under.
+  const text = out.join("\n");
+  return text.length > 2600 ? text.slice(0, 2597) + "…" : text;
 }
 
 /** Escape mrkdwn special chars in display text (not in URLs). */
@@ -307,10 +326,10 @@ function slackBlocks(timely: TimelyOut[], people: PeopleOut[], evergreen: Evergr
     blocks.push({ type: "divider" });
     blocks.push({ type: "section", text: { type: "mrkdwn", text: "🔥  *今日即時*" } });
     timely.forEach((a, idx) => {
-      // Clickable bold title → the reader page; Chinese TLDR on its own line.
+      // Clickable bold title → the reader page; full Chinese summary below.
       blocks.push({
         type: "section",
-        text: { type: "mrkdwn", text: `*<${a.article_reader_url}|${a.rank}. ${esc(a.title)}>*\n${esc(tldr(a.ai_summary_zh, a.ai_summary))}` },
+        text: { type: "mrkdwn", text: `*<${a.article_reader_url}|${a.rank}. ${esc(a.title)}>*\n${esc(summaryText(a.ai_summary_zh, a.ai_summary))}` },
       });
       // Metadata demoted to a small grey context line.
       blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: metaLine(a) }] });
@@ -322,7 +341,7 @@ function slackBlocks(timely: TimelyOut[], people: PeopleOut[], evergreen: Evergr
     blocks.push({ type: "divider" });
     blocks.push({ type: "section", text: { type: "mrkdwn", text: "👤  *大佬動態*" } });
     for (const p of people) {
-      const line = tldr(p.ai_summary_zh, p.ai_summary) || p.blurb || "";
+      const line = summaryText(p.ai_summary_zh, p.ai_summary) || p.blurb || "";
       blocks.push({
         type: "section",
         text: { type: "mrkdwn", text: `*<${p.url}|${esc(p.title)}>*${line ? `\n${esc(line)}` : ""}` },
@@ -337,9 +356,12 @@ function slackBlocks(timely: TimelyOut[], people: PeopleOut[], evergreen: Evergr
     blocks.push({ type: "divider" });
     blocks.push({ type: "section", text: { type: "mrkdwn", text: "📖  *深度精選*" } });
     for (const e of evergreen) {
+      // blurb is an og:description one-liner on fresh runs, but a full TLDR+
+      // bullets summary when rebuilt from cache — summaryText handles both.
+      const line = summaryText(e.blurb) || e.blurb;
       blocks.push({
         type: "section",
-        text: { type: "mrkdwn", text: `*<${e.url}|${esc(e.title)}>*${e.blurb ? `\n${esc(e.blurb)}` : ""}` },
+        text: { type: "mrkdwn", text: `*<${e.url}|${esc(e.title)}>*${line ? `\n${esc(line)}` : ""}` },
       });
       blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: "every.to   ·   點標題讀原文" }] });
     }

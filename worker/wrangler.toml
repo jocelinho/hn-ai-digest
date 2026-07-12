@@ -7,7 +7,7 @@ compatibility_date = "2026-01-01"
 crons = ["0 1 * * *"]
 
 [vars]
-ARTICLE_READER_API = "https://article-reader.pages.dev"
+ARTICLE_READER_API = "https://tech-news.jocelinho.com"
 HN_DIGEST_DEDUP_DAYS = "14"
 
 # Secrets (set via `wrangler secret put`, never committed):

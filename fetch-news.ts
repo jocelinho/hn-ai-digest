@@ -24,7 +24,7 @@ import {
   dedupKey,
 } from "./src/sources";
 
-const ARTICLE_READER_API = process.env.ARTICLE_READER_API ?? "https://article-reader.pages.dev";
+const ARTICLE_READER_API = process.env.ARTICLE_READER_API ?? "https://tech-news.jocelinho.com";
 const DEDUP_WINDOW_DAYS = Number(process.env.HN_DIGEST_DEDUP_DAYS ?? 14);
 const MIN_COMMENTS_FOR_FALLBACK = 20;
 

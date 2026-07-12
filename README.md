@@ -68,7 +68,7 @@ Works with zero config (stateless). Env vars (see `.env.example`):
 | Var | Default | Purpose |
 |---|---|---|
 | `HN_AI_DIGEST_DIR` | — | Repo location (used by the Claude Code News skill to find this script); set per machine |
-| `ARTICLE_READER_API` | `https://article-reader.pages.dev` | Summarization + digest-state service base URL |
+| `ARTICLE_READER_API` | `https://tech-news.jocelinho.com` | Summarization + digest-state service base URL |
 | `HN_DIGEST_DEDUP_DAYS` | `14` | How many days back to dedup against previously-picked stories |
 
 ### Usage
@@ -119,7 +119,7 @@ hn-ai-digest/
       "source": "TechCrunch",
       "ai_summary": "**TLDR:** ...",
       "ai_summary_zh": "**TLDR：** ...",
-      "article_reader_url": "https://article-reader.pages.dev/article?id=...",
+      "article_reader_url": "https://tech-news.jocelinho.com/article?id=...",
       "hn_url": "https://news.ycombinator.com/item?id=...",
       "origin_url": "https://...",
       "score": 197, "comments": 92, "reading_time": 3

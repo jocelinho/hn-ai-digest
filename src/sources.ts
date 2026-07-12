@@ -24,6 +24,9 @@ export const TIMELY_COUNT = 4;
 export const EVERGREEN_COUNT = 1;
 /** No single source may occupy more than this many timely slots. */
 export const MAX_PER_SOURCE = 2;
+/** People-watch layer: max picks per digest, and how far back a post counts as "new". */
+export const PEOPLE_COUNT = 3;
+export const PEOPLE_MAX_AGE_HOURS = 76;
 
 // Expanded AI/tech keyword set — companies, products, and concepts. Matched
 // case-insensitively against titles. Word-boundary forms avoid false positives
@@ -53,12 +56,30 @@ export function matchesAI(title: string): boolean {
   return KEYWORD_REGEX.test(title);
 }
 
+// Followed people (the 👤 layer). Their names also act as keywords across ALL
+// timely sources: a mention lets a story through the AI filter and boosts its
+// rank. This is the only coverage for X-only people (e.g. Mike Krieger has no
+// blog/RSS — he surfaces when HN/TechCrunch/Verge write about him).
+export const PEOPLE_NAMES = [
+  "karpathy", "paul graham", "garry tan", "mike krieger", "thariq",
+  "dex horthy", "dexter horthy", "humanlayer", "12-factor agents",
+  "simon willison", "\\bswyx\\b", "latent space", "lilian weng",
+  "sam altman", "dwarkesh", "ethan mollick", "ben thompson", "stratechery",
+];
+
+const PEOPLE_REGEX = new RegExp(PEOPLE_NAMES.join("|"), "i");
+
+export function matchesPeople(title: string): boolean {
+  return PEOPLE_REGEX.test(title);
+}
+
 // ---------- types ----------
 
 export type SourceId =
-  | "hn" | "openai" | "techcrunch" | "theverge" | "arstechnica" | "every.to";
+  | "hn" | "openai" | "techcrunch" | "theverge" | "arstechnica" | "every.to"
+  | "people";
 
-export type DigestKind = "timely" | "evergreen";
+export type DigestKind = "timely" | "evergreen" | "people";
 
 export interface Candidate {
   source: SourceId;
@@ -73,7 +94,9 @@ export interface Candidate {
   comments?: number; // HN comments
   hnId?: number;
   hnUrl?: string;
-  blurb?: string; // public one-liner (every.to og:description) — no full text fetched
+  blurb?: string; // public one-liner (every.to og:description / feed description)
+  person?: string; // people layer: who this update is from
+  medium?: PersonMedium; // people layer: which of their channels it came from
 }
 
 interface RSSFeed {
@@ -91,6 +114,51 @@ export const RSS_FEEDS: RSSFeed[] = [
   { source: "theverge", label: "The Verge", url: "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml" },
   { source: "arstechnica", label: "Ars Technica", url: "https://feeds.arstechnica.com/arstechnica/technology-lab" },
 ];
+
+export type PersonMedium = "blog" | "youtube" | "newsletter" | "podcast";
+
+export interface PersonFeed {
+  person: string;
+  url: string;
+  medium: PersonMedium;
+  /** 2 = Jocelin 點名必追；1 = 推薦名單。搶 PEOPLE_COUNT 名額時高者優先。 */
+  priority: 1 | 2;
+}
+
+// The people-watch roster. X/Twitter has no reliable free feed, so coverage is
+// blog/YouTube/newsletter RSS + the PEOPLE_NAMES boost above for news mentions.
+// All URLs verified live 2026-07-12.
+export const PEOPLE_FEEDS: PersonFeed[] = [
+  { person: "Andrej Karpathy", url: "https://karpathy.bearblog.dev/feed/", medium: "blog", priority: 2 },
+  { person: "Andrej Karpathy", url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCXUPKJO5MZQN11PqgIvyuvQ", medium: "youtube", priority: 2 },
+  { person: "Garry Tan", url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCIBgYfDjtWlbJhg--Z4sOgQ", medium: "youtube", priority: 2 },
+  { person: "Paul Graham", url: "http://www.aaronsw.com/2002/feeds/pgessays.rss", medium: "blog", priority: 2 },
+  { person: "Thariq Shihipar", url: "https://www.thariq.io/rss.xml", medium: "blog", priority: 2 },
+  { person: "Dex Horthy", url: "https://humanlayer.substack.com/feed", medium: "newsletter", priority: 2 },
+  // Mike Krieger: X-only, no feed — covered by PEOPLE_NAMES mention-boost.
+  { person: "Simon Willison", url: "https://simonwillison.net/atom/entries/", medium: "blog", priority: 1 },
+  { person: "swyx", url: "https://www.latent.space/feed", medium: "newsletter", priority: 1 },
+  { person: "Lilian Weng", url: "https://lilianweng.github.io/index.xml", medium: "blog", priority: 1 },
+  { person: "Sam Altman", url: "https://blog.samaltman.com/posts.atom", medium: "blog", priority: 1 },
+  { person: "Dwarkesh Patel", url: "https://www.dwarkesh.com/feed", medium: "podcast", priority: 1 },
+  { person: "Ethan Mollick", url: "https://www.oneusefulthing.org/feed", medium: "newsletter", priority: 1 },
+  { person: "Ben Thompson", url: "https://stratechery.com/feed/", medium: "newsletter", priority: 1 },
+];
+
+export const PERSON_MEDIUM_LABEL: Record<PersonMedium, string> = {
+  blog: "Blog", youtube: "YouTube", newsletter: "Newsletter", podcast: "Podcast",
+};
+
+// digest_source encoding for people picks: "people:<medium>:<person>" — keeps
+// person+medium round-trippable through the D1 cache without schema changes.
+export function peopleSource(p: { person: string; medium: PersonMedium }): string {
+  return `people:${p.medium}:${p.person}`;
+}
+export function parsePeopleSource(s: string): { person: string; medium: PersonMedium } | null {
+  if (!s.startsWith("people:")) return null;
+  const [, medium, ...rest] = s.split(":");
+  return { person: rest.join(":"), medium: (medium || "blog") as PersonMedium };
+}
 
 // ---------- url / text helpers ----------
 
@@ -226,9 +294,9 @@ function parseFeedField(block: string, tag: string): string {
   return m ? decodeEntities(m[1]) : "";
 }
 
-function parseFeed(xml: string): { title: string; link: string; published: number }[] {
+function parseFeed(xml: string): { title: string; link: string; published: number; blurb?: string }[] {
   const blocks = xml.match(/<(item|entry)\b[\s\S]*?<\/\1>/gi) ?? [];
-  const out: { title: string; link: string; published: number }[] = [];
+  const out: { title: string; link: string; published: number; blurb?: string }[] = [];
   for (const b of blocks) {
     const title = parseFeedField(b, "title");
     // RSS: <link>url</link>. Atom: <link href="url" rel="alternate"/>.
@@ -241,9 +309,17 @@ function parseFeed(xml: string): { title: string; link: string; published: numbe
     const dateStr =
       parseFeedField(b, "pubDate") || parseFeedField(b, "published") ||
       parseFeedField(b, "updated") || parseFeedField(b, "dc:date");
+    // No/unparseable date → 0 (unknown), NOT "now": some feeds (e.g. the PG
+    // essays scraper) carry no dates at all, and stamping them fresh would make
+    // the whole archive look new every single day.
     const ms = dateStr ? Date.parse(dateStr) : NaN;
-    const published = Number.isNaN(ms) ? Math.floor(Date.now() / 1000) : Math.floor(ms / 1000);
-    if (title && /^https?:\/\//i.test(link)) out.push({ title, link, published });
+    const published = Number.isNaN(ms) ? 0 : Math.floor(ms / 1000);
+    // YouTube: media:description. RSS: description. Atom: summary. May contain HTML.
+    const rawBlurb =
+      parseFeedField(b, "media:description") || parseFeedField(b, "description") ||
+      parseFeedField(b, "summary");
+    const blurb = rawBlurb ? htmlToText(rawBlurb).slice(0, 300) : undefined;
+    if (title && /^https?:\/\//i.test(link)) out.push({ title, link, published, blurb });
   }
   return out;
 }
@@ -333,8 +409,11 @@ export async function fetchEveryToCandidates(limit = 4): Promise<Candidate[]> {
 
 const SOURCE_WEIGHT: Record<SourceId, number> = {
   openai: 1.5, hn: 1.15, techcrunch: 1.1,
-  theverge: 1.0, arstechnica: 1.0, "every.to": 1.0,
+  theverge: 1.0, arstechnica: 1.0, "every.to": 1.0, people: 1.0,
 };
+
+/** Rank boost for timely stories that mention a followed person. */
+const PEOPLE_MENTION_BOOST = 1.3;
 
 /**
  * Cross-source score. Blends recency, source weight, and (for HN) community
@@ -349,7 +428,8 @@ export function rankScore(c: Candidate, nowSec: number): number {
     c.source === "hn"
       ? Math.min((c.score ?? 0) / 400, 2.5) + Math.min((c.comments ?? 0) / 250, 1.2)
       : 0.4; // non-HN has no vote signal; small flat boost
-  return weight * recency * (1 + popularity);
+  const mention = matchesPeople(c.title) ? PEOPLE_MENTION_BOOST : 1;
+  return weight * recency * (1 + popularity) * mention;
 }
 
 export function generateWhyPicked(c: Candidate, nowSec: number): string {
@@ -386,7 +466,9 @@ export async function collectTimelyCandidates(excludeKeys: Set<string>): Promise
   const seen = new Set<string>();
   const pool: Candidate[] = [];
   for (const c of batches.flat()) {
-    if (!matchesAI(c.title)) continue;
+    // A followed person's name counts as an AI keyword — their news gets in
+    // even when the title has no AI term (e.g. "Garry Tan on YC's new fund").
+    if (!matchesAI(c.title) && !matchesPeople(c.title)) continue;
     if (excludeKeys.has(c.dedupId) || excludeKeys.has(dedupKey(c.url))) continue;
     if (seen.has(c.dedupId)) continue;
     seen.add(c.dedupId);
@@ -419,4 +501,67 @@ export async function collectTimelyCandidates(excludeKeys: Set<string>): Promise
 export async function collectEvergreenCandidates(excludeKeys: Set<string>): Promise<Candidate[]> {
   const cands = await fetchEveryToCandidates();
   return cands.filter((c) => !excludeKeys.has(c.dedupId)).slice(0, EVERGREEN_COUNT);
+}
+
+/**
+ * Collect the 👤 people layer: fresh posts from followed people's own channels.
+ * Rules: only posts within PEOPLE_MAX_AGE_HOURS (cross-day dedup via excludeKeys
+ * stops repeats anyway — the window is a backstop for the very first runs), at
+ * most one item per person per digest, Jocelin's named people (priority 2) win
+ * contested slots, then fresher first, capped at PEOPLE_COUNT.
+ */
+export async function collectPeopleCandidates(excludeKeys: Set<string>): Promise<Candidate[]> {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const minPublished = nowSec - PEOPLE_MAX_AGE_HOURS * 3600;
+
+  const batches = await Promise.all(
+    PEOPLE_FEEDS.map(async (f): Promise<Candidate[]> => {
+      try {
+        const res = await fetch(f.url, { headers: { "User-Agent": FETCH_UA }, signal: AbortSignal.timeout(10000) });
+        if (!res.ok) return [];
+        const xml = await res.text();
+        return parseFeed(xml)
+          .slice(0, 10)
+          // Dated entries must be inside the freshness window. Undated entries
+          // (published=0, e.g. the PG essays scraper) only count via the feed's
+          // top item — it surfaces once (D1 dedup) whenever a new post lands.
+          .filter((e, idx) => (e.published > 0 ? e.published >= minPublished : idx === 0))
+          .filter((e) => !/#shorts/i.test(e.title)) // skip YouTube Shorts noise
+          .filter((e) => !/^\[AINews\]/i.test(e.title)) // skip swyx's daily AINews (redundant with this digest)
+          .map((e): Candidate => ({
+            source: "people",
+            sourceLabel: f.person,
+            kind: "people",
+            dedupId: dedupKey(e.link),
+            title: e.title,
+            url: e.link,
+            publishedAt: e.published,
+            blurb: e.blurb,
+            person: f.person,
+            medium: f.medium,
+          }));
+      } catch {
+        return [];
+      }
+    }),
+  );
+
+  const priorityOf = (person: string): number =>
+    Math.max(...PEOPLE_FEEDS.filter((f) => f.person === person).map((f) => f.priority));
+
+  const fresh = batches
+    .flat()
+    .filter((c) => !excludeKeys.has(c.dedupId))
+    .sort((a, b) =>
+      priorityOf(b.person!) - priorityOf(a.person!) || b.publishedAt - a.publishedAt);
+
+  const perPerson = new Set<string>();
+  const picked: Candidate[] = [];
+  for (const c of fresh) {
+    if (picked.length >= PEOPLE_COUNT) break;
+    if (perPerson.has(c.person!)) continue;
+    perPerson.add(c.person!);
+    picked.push(c);
+  }
+  return picked;
 }

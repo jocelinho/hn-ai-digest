@@ -19,8 +19,13 @@
 
 import {
   Candidate,
+  PersonMedium,
+  PERSON_MEDIUM_LABEL,
   collectTimelyCandidates,
   collectEvergreenCandidates,
+  collectPeopleCandidates,
+  peopleSource,
+  parsePeopleSource,
   fetchArticleText,
   fetchHNComments,
   generateWhyPicked,
@@ -56,6 +61,18 @@ interface EvergreenOut {
   blurb: string;
   url: string;
 }
+
+interface PeopleOut {
+  person: string;
+  medium: PersonMedium;
+  title: string;
+  ai_summary: string;
+  ai_summary_zh?: string;
+  blurb?: string;
+  url: string; // what the Slack title links to (reader page, or origin for videos)
+  reading_time?: number;
+}
+
 
 // ---------- digest state (D1 via article-reader) ----------
 
@@ -197,6 +214,59 @@ async function collectEvergreen(env: Env, exclude: Set<string>, today: string): 
   return out;
 }
 
+async function collectPeople(env: Env, exclude: Set<string>, today: string): Promise<PeopleOut[]> {
+  const cands = await collectPeopleCandidates(exclude);
+  const out: PeopleOut[] = [];
+  for (const c of cands) {
+    // Videos/podcasts: no article body worth fetching — record title+blurb for
+    // dedup and link straight to the original. Blogs/newsletters: full reader
+    // treatment (fetch body → AI summary → reader URL), falling back to the
+    // blurb-only record if the body won't fetch.
+    const wantBody = c.medium === "blog" || c.medium === "newsletter";
+    const content = wantBody ? await fetchArticleText(c.url) : null;
+    let readerUrl: string | null = null;
+    let summary = "";
+    let summaryZh: string | undefined;
+    let readingTime = 0;
+    try {
+      const res = await fetch(`${env.ARTICLE_READER_API}/api/article`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source_type: "url",
+          source_url: c.url,
+          raw_content: content ?? `${c.title}\n\n${c.blurb ?? ""}`.trim(),
+          title: c.title,
+          digest_date: today,
+          digest_rank: 0,
+          digest_source: peopleSource({ person: c.person!, medium: c.medium! }),
+        }),
+        signal: AbortSignal.timeout(90000),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as any;
+        readerUrl = data.url ?? null;
+        summary = data.ai_summary || "";
+        summaryZh = data.ai_summary_zh || undefined;
+        readingTime = data.reading_time || 0;
+      }
+    } catch {
+      // Recording/summarizing is best-effort; still show the pick.
+    }
+    out.push({
+      person: c.person!,
+      medium: c.medium!,
+      title: c.title,
+      ai_summary: summary,
+      ai_summary_zh: summaryZh,
+      blurb: c.blurb,
+      url: content && readerUrl ? readerUrl : c.url,
+      reading_time: content ? readingTime : 0,
+    });
+  }
+  return out;
+}
+
 // ---------- Slack formatting ----------
 
 // Jocelin's Slack member ID — mentioned in the daily digest so it triggers a
@@ -227,7 +297,7 @@ function metaLine(a: TimelyOut): string {
   return parts.length ? parts.join("   ·   ") : "—";
 }
 
-function slackBlocks(timely: TimelyOut[], evergreen: EvergreenOut[], date: string) {
+function slackBlocks(timely: TimelyOut[], people: PeopleOut[], evergreen: EvergreenOut[], date: string) {
   const blocks: any[] = [
     { type: "header", text: { type: "plain_text", text: "🗞️  今日 AI・科技新聞", emoji: true } },
     { type: "context", elements: [{ type: "mrkdwn", text: `📅 ${date} · ${MENTION}` }] },
@@ -248,6 +318,21 @@ function slackBlocks(timely: TimelyOut[], evergreen: EvergreenOut[], date: strin
     });
   }
 
+  if (people.length) {
+    blocks.push({ type: "divider" });
+    blocks.push({ type: "section", text: { type: "mrkdwn", text: "👤  *大佬動態*" } });
+    for (const p of people) {
+      const line = tldr(p.ai_summary_zh, p.ai_summary) || p.blurb || "";
+      blocks.push({
+        type: "section",
+        text: { type: "mrkdwn", text: `*<${p.url}|${esc(p.title)}>*${line ? `\n${esc(line)}` : ""}` },
+      });
+      const meta: string[] = [esc(p.person), PERSON_MEDIUM_LABEL[p.medium] ?? p.medium];
+      if (p.reading_time) meta.push(`📖 ${p.reading_time} min`);
+      blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: meta.join("   ·   ") }] });
+    }
+  }
+
   if (evergreen.length) {
     blocks.push({ type: "divider" });
     blocks.push({ type: "section", text: { type: "mrkdwn", text: "📖  *深度精選*" } });
@@ -263,7 +348,7 @@ function slackBlocks(timely: TimelyOut[], evergreen: EvergreenOut[], date: strin
   blocks.push({ type: "divider" });
   blocks.push({
     type: "context",
-    elements: [{ type: "mrkdwn", text: "🤖 via hn-ai-digest · HN · OpenAI · TechCrunch · The Verge · Ars · every.to" }],
+    elements: [{ type: "mrkdwn", text: "🤖 via hn-ai-digest · HN · OpenAI · TechCrunch · The Verge · Ars · every.to · 13 位大佬追蹤" }],
   });
   // Top-level text is the mobile/lock-screen notification preview.
   return { text: `🗞️ 今日 AI・科技新聞 ${date} ${MENTION}`, blocks };
@@ -281,7 +366,7 @@ async function postToSlack(env: Env, payload: unknown): Promise<boolean> {
 
 // ---------- entry ----------
 
-async function runDigest(env: Env, force = false): Promise<{ status: string; timely: number; evergreen: number; cached: boolean }> {
+async function runDigest(env: Env, force = false): Promise<{ status: string; timely: number; people: number; evergreen: number; cached: boolean }> {
   const today = todayUTC();
   const dedupDays = Number(env.HN_DIGEST_DEDUP_DAYS ?? 14);
 
@@ -289,9 +374,11 @@ async function runDigest(env: Env, force = false): Promise<{ status: string; tim
   const cachedItems = force ? [] : await getDigest(env, { date: today });
   const cachedTimely = cachedItems.filter((i) => (i.rank ?? 0) >= 1);
   const cachedEvergreen = cachedItems.filter((i) => i.digest_source === "every.to");
+  const cachedPeople = cachedItems.filter((i) => i.digest_source?.startsWith("people:"));
 
   let timely: TimelyOut[];
   let evergreen: EvergreenOut[];
+  let people: PeopleOut[];
   let usedCache = false;
 
   if (cachedTimely.length >= 3) {
@@ -315,20 +402,35 @@ async function runDigest(env: Env, force = false): Promise<{ status: string; tim
       blurb: i.ai_summary ?? "",
       url: i.source_url ?? "",
     }));
+    people = cachedPeople.flatMap((i): PeopleOut[] => {
+      const pm = parsePeopleSource(i.digest_source ?? "");
+      if (!pm) return [];
+      const isVideoish = pm.medium === "youtube" || pm.medium === "podcast";
+      return [{
+        person: pm.person,
+        medium: pm.medium,
+        title: i.title ?? "",
+        ai_summary: i.ai_summary ?? "",
+        ai_summary_zh: i.ai_summary_zh ?? undefined,
+        url: (isVideoish ? i.source_url : i.article_reader_url) ?? i.article_reader_url,
+        reading_time: isVideoish ? 0 : i.reading_time ?? 0,
+      }];
+    });
   } else {
     const recent = await getDigest(env, { since: daysAgoUTC(dedupDays) });
     const exclude = buildExcludeSet(recent);
     timely = await collectTimely(env, exclude, today);
+    people = await collectPeople(env, exclude, today);
     evergreen = await collectEvergreen(env, exclude, today);
   }
 
-  if (timely.length === 0 && evergreen.length === 0) {
+  if (timely.length === 0 && evergreen.length === 0 && people.length === 0) {
     await postToSlack(env, { text: `🗞️ Top AI/Tech News — ${today}\n(no fresh AI/tech stories found today)` });
-    return { status: "empty", timely: 0, evergreen: 0, cached: usedCache };
+    return { status: "empty", timely: 0, people: 0, evergreen: 0, cached: usedCache };
   }
 
-  const ok = await postToSlack(env, slackBlocks(timely, evergreen, today));
-  return { status: ok ? "sent" : "slack_failed", timely: timely.length, evergreen: evergreen.length, cached: usedCache };
+  const ok = await postToSlack(env, slackBlocks(timely, people, evergreen, today));
+  return { status: ok ? "sent" : "slack_failed", timely: timely.length, people: people.length, evergreen: evergreen.length, cached: usedCache };
 }
 
 function sourceLabelOf(source?: string): string {

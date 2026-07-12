@@ -16,8 +16,13 @@ import { Readability } from "@mozilla/readability";
 import {
   Candidate,
   HtmlExtractor,
+  PersonMedium,
+  PERSON_MEDIUM_LABEL,
   collectTimelyCandidates,
   collectEvergreenCandidates,
+  collectPeopleCandidates,
+  peopleSource,
+  parsePeopleSource,
   fetchArticleText,
   fetchHNComments,
   generateWhyPicked,
@@ -78,6 +83,70 @@ interface EvergreenOut {
   source: string;
   blurb: string;
   url: string;
+}
+
+interface PeopleOut {
+  person: string;
+  medium: PersonMedium;
+  mediumLabel: string;
+  title: string;
+  ai_summary: string;
+  ai_summary_zh?: string;
+  blurb?: string;
+  url: string;
+  reading_time?: number;
+}
+
+/** People layer for the manual skill — mirrors the worker's collectPeople. */
+async function collectPeople(exclude: Set<string>, today: string): Promise<PeopleOut[]> {
+  const cands = await collectPeopleCandidates(exclude);
+  const out: PeopleOut[] = [];
+  for (const c of cands) {
+    const wantBody = c.medium === "blog" || c.medium === "newsletter";
+    const content = wantBody ? await fetchArticleText(c.url, readabilityExtractor) : null;
+    let readerUrl: string | null = null;
+    let summary = "";
+    let summaryZh: string | undefined;
+    let readingTime = 0;
+    try {
+      const res = await fetch(`${ARTICLE_READER_API}/api/article`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source_type: "url",
+          source_url: c.url,
+          raw_content: content ?? `${c.title}\n\n${c.blurb ?? ""}`.trim(),
+          title: c.title,
+          digest_date: today,
+          digest_rank: 0,
+          digest_source: peopleSource({ person: c.person!, medium: c.medium! }),
+        }),
+        signal: AbortSignal.timeout(90000),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        readerUrl = data.url ?? null;
+        summary = data.ai_summary || "";
+        summaryZh = data.ai_summary_zh || undefined;
+        readingTime = data.reading_time || 0;
+      }
+      console.error(`  👤 ${c.person}: ${c.title.slice(0, 60)}`);
+    } catch (error: any) {
+      console.error(`  ⚠️  people record failed (${c.person}): ${error.message}`);
+    }
+    out.push({
+      person: c.person!,
+      medium: c.medium!,
+      mediumLabel: PERSON_MEDIUM_LABEL[c.medium!] ?? c.medium!,
+      title: c.title,
+      ai_summary: summary,
+      ai_summary_zh: summaryZh,
+      blurb: c.blurb,
+      url: content && readerUrl ? readerUrl : c.url,
+      reading_time: content ? readingTime : 0,
+    });
+  }
+  return out;
 }
 
 function todayStr(): string {
@@ -172,6 +241,7 @@ async function main() {
   const cachedItems = force ? [] : await getDigest({ date: today });
   const cachedTimely = cachedItems.filter((i) => (i.rank ?? 0) >= 1);
   const cachedEvergreen = cachedItems.filter((i) => i.digest_source === "every.to");
+  const cachedPeople = cachedItems.filter((i) => i.digest_source?.startsWith("people:"));
 
   if (cachedTimely.length >= 3) {
     console.error(`✅ Found ${cachedTimely.length} cached picks for ${today} (from Cloudflare)`);
@@ -196,7 +266,22 @@ async function main() {
       blurb: i.ai_summary ?? "",
       url: i.source_url ?? "",
     }));
-    console.log(JSON.stringify({ date: today, cached: true, timely, evergreen }, null, 2));
+    const people: PeopleOut[] = cachedPeople.flatMap((i): PeopleOut[] => {
+      const pm = parsePeopleSource(i.digest_source ?? "");
+      if (!pm) return [];
+      const isVideoish = pm.medium === "youtube" || pm.medium === "podcast";
+      return [{
+        person: pm.person,
+        medium: pm.medium,
+        mediumLabel: PERSON_MEDIUM_LABEL[pm.medium] ?? pm.medium,
+        title: i.title ?? "",
+        ai_summary: i.ai_summary ?? "",
+        ai_summary_zh: i.ai_summary_zh ?? undefined,
+        url: (isVideoish ? i.source_url : i.article_reader_url) ?? i.article_reader_url,
+        reading_time: isVideoish ? 0 : i.reading_time ?? 0,
+      }];
+    });
+    console.log(JSON.stringify({ date: today, cached: true, timely, people, evergreen }, null, 2));
     return;
   }
 
@@ -224,6 +309,10 @@ async function main() {
     if (out) timely.push({ ...out, rank: rank++ });
   }
 
+  // Step 3.5: People layer — fresh posts from followed people's own channels.
+  const people = await collectPeople(exclude, today);
+  console.error(`👤 ${people.length} people update(s)`);
+
   // Step 4: One evergreen every.to essay (title + public blurb, no paywall body).
   const evCands = await collectEvergreenCandidates(exclude);
   const evergreen: EvergreenOut[] = [];
@@ -249,12 +338,12 @@ async function main() {
     evergreen.push({ title: c.title, source: c.sourceLabel, blurb: c.blurb ?? "", url: c.url });
   }
 
-  if (timely.length === 0 && evergreen.length === 0) {
+  if (timely.length === 0 && evergreen.length === 0 && people.length === 0) {
     console.error("❌ No new articles found");
     process.exit(1);
   }
 
-  console.log(JSON.stringify({ date: today, cached: false, timely, evergreen }, null, 2));
+  console.log(JSON.stringify({ date: today, cached: false, timely, people, evergreen }, null, 2));
 }
 
 function sourceLabelOf(source?: string): string {

@@ -416,6 +416,12 @@ async function runDigest(env: Env, force = false): Promise<{ status: string; tim
         reading_time: isVideoish ? 0 : i.reading_time ?? 0,
       }];
     });
+    // News is cached but the people layer wasn't collected yet today (e.g. a
+    // rerun after the people feature landed) — top it up without re-picking news.
+    if (people.length === 0) {
+      const recent = await getDigest(env, { since: daysAgoUTC(dedupDays) });
+      people = await collectPeople(env, buildExcludeSet(recent), today);
+    }
   } else {
     const recent = await getDigest(env, { since: daysAgoUTC(dedupDays) });
     const exclude = buildExcludeSet(recent);

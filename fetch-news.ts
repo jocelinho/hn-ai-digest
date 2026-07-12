@@ -266,7 +266,7 @@ async function main() {
       blurb: i.ai_summary ?? "",
       url: i.source_url ?? "",
     }));
-    const people: PeopleOut[] = cachedPeople.flatMap((i): PeopleOut[] => {
+    let people: PeopleOut[] = cachedPeople.flatMap((i): PeopleOut[] => {
       const pm = parsePeopleSource(i.digest_source ?? "");
       if (!pm) return [];
       const isVideoish = pm.medium === "youtube" || pm.medium === "podcast";
@@ -281,6 +281,12 @@ async function main() {
         reading_time: isVideoish ? 0 : i.reading_time ?? 0,
       }];
     });
+    // News is cached but the people layer wasn't collected yet today — top it
+    // up without re-picking news.
+    if (people.length === 0) {
+      const recent = await getDigest({ since: daysAgoStr(DEDUP_WINDOW_DAYS) });
+      people = await collectPeople(buildExcludeSet(recent), today);
+    }
     console.log(JSON.stringify({ date: today, cached: true, timely, people, evergreen }, null, 2));
     return;
   }

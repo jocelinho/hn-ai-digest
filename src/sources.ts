@@ -210,19 +210,31 @@ export function extractMeta(html: string, prop: string): string | null {
 
 export type HtmlExtractor = (html: string, url: string) => string | null;
 
+export interface FetchedArticle {
+  /** Readable text. For PDFs this is a short placeholder (the real content is read via pdfUrl). */
+  text: string;
+  /** Set when the URL serves a PDF — pass through to article-reader as pdf_url so Claude reads the PDF directly. */
+  pdfUrl?: string;
+}
+
 /**
  * Fetch an article URL and return readable text. Uses the injected extractor
  * (e.g. Readability on bun) when provided, else the Worker-safe htmlToText.
+ * PDFs can't be scraped as HTML — those return a placeholder plus pdfUrl.
  * Fail-open: returns null on any error or thin content.
  */
-export async function fetchArticleText(url: string, extractor?: HtmlExtractor): Promise<string | null> {
+export async function fetchArticleText(url: string, extractor?: HtmlExtractor): Promise<FetchedArticle | null> {
   try {
     const res = await fetch(url, { headers: { "User-Agent": FETCH_UA }, signal: AbortSignal.timeout(15000) });
     if (!res.ok) return null;
-    const html = await res.text();
-    const text = (extractor ? extractor(html, url) : htmlToText(html))?.trim() ?? "";
+    const body = await res.text();
+    const contentType = res.headers.get("content-type") ?? "";
+    if (contentType.includes("application/pdf") || body.startsWith("%PDF-")) {
+      return { text: `[PDF] ${url}`, pdfUrl: url };
+    }
+    const text = (extractor ? extractor(body, url) : htmlToText(body))?.trim() ?? "";
     if (text.length >= MIN_CONTENT_LENGTH && !text.includes("Something went wrong")) {
-      return text.slice(0, MAX_CONTENT_CHARS);
+      return { text: text.slice(0, MAX_CONTENT_CHARS) };
     }
     return null;
   } catch {

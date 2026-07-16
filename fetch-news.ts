@@ -24,6 +24,7 @@ import {
   peopleSource,
   parsePeopleSource,
   fetchArticleText,
+  FetchedArticle,
   fetchHNComments,
   generateWhyPicked,
   dedupKey,
@@ -115,7 +116,8 @@ async function collectPeople(exclude: Set<string>, today: string): Promise<Peopl
         body: JSON.stringify({
           source_type: "url",
           source_url: c.url,
-          raw_content: content ?? `${c.title}\n\n${c.blurb ?? ""}`.trim(),
+          raw_content: content?.text ?? `${c.title}\n\n${c.blurb ?? ""}`.trim(),
+          pdf_url: content?.pdfUrl,
           title: c.title,
           digest_date: today,
           digest_rank: 0,
@@ -185,7 +187,7 @@ function buildExcludeSet(recent: DigestItem[]): Set<string> {
   return keys;
 }
 
-async function postArticle(c: Candidate, content: string, today: string, rank: number): Promise<TimelyOut | null> {
+async function postArticle(c: Candidate, content: FetchedArticle, today: string, rank: number): Promise<TimelyOut | null> {
   try {
     const res = await fetch(`${ARTICLE_READER_API}/api/article`, {
       method: "POST",
@@ -193,7 +195,8 @@ async function postArticle(c: Candidate, content: string, today: string, rank: n
       body: JSON.stringify({
         source_type: "url",
         source_url: c.url,
-        raw_content: content,
+        raw_content: content.text,
+        pdf_url: content.pdfUrl,
         title: c.title,
         hn_url: c.hnUrl,
         hn_score: c.score,
@@ -305,7 +308,8 @@ async function main() {
   for (const c of candidates) {
     let content = await fetchArticleText(c.url, readabilityExtractor);
     if (!content && c.source === "hn" && c.hnId != null && (c.comments ?? 0) >= MIN_COMMENTS_FOR_FALLBACK) {
-      content = await fetchHNComments(c.hnId);
+      const comments = await fetchHNComments(c.hnId);
+      if (comments) content = { text: comments };
     }
     if (!content) {
       console.error(`  ⏭️  ${c.sourceLabel}: no content — ${c.title.slice(0, 50)}`);

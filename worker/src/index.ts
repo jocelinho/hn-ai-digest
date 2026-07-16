@@ -27,6 +27,7 @@ import {
   peopleSource,
   parsePeopleSource,
   fetchArticleText,
+  FetchedArticle,
   fetchHNComments,
   generateWhyPicked,
   dedupKey,
@@ -125,7 +126,7 @@ function buildExcludeSet(recent: DigestItem[]): Set<string> {
 
 // ---------- pipeline ----------
 
-async function postArticle(env: Env, c: Candidate, content: string, today: string, rank: number): Promise<TimelyOut | null> {
+async function postArticle(env: Env, c: Candidate, content: FetchedArticle, today: string, rank: number): Promise<TimelyOut | null> {
   try {
     const res = await fetch(`${env.ARTICLE_READER_API}/api/article`, {
       method: "POST",
@@ -133,7 +134,8 @@ async function postArticle(env: Env, c: Candidate, content: string, today: strin
       body: JSON.stringify({
         source_type: "url",
         source_url: c.url,
-        raw_content: content,
+        raw_content: content.text,
+        pdf_url: content.pdfUrl,
         title: c.title,
         hn_url: c.hnUrl,
         hn_score: c.score,
@@ -171,11 +173,12 @@ async function collectTimely(env: Env, exclude: Set<string>, today: string): Pro
   const candidates = await collectTimelyCandidates(exclude);
 
   // Fetch body for each candidate (HN comment fallback), then summarize+record.
-  const withContent: { c: Candidate; content: string }[] = [];
+  const withContent: { c: Candidate; content: FetchedArticle }[] = [];
   for (const c of candidates) {
     let content = await fetchArticleText(c.url);
     if (!content && c.source === "hn" && c.hnId != null && (c.comments ?? 0) >= MIN_COMMENTS_FOR_FALLBACK) {
-      content = await fetchHNComments(c.hnId);
+      const comments = await fetchHNComments(c.hnId);
+      if (comments) content = { text: comments };
     }
     if (content) withContent.push({ c, content });
   }
@@ -235,7 +238,8 @@ async function collectPeople(env: Env, exclude: Set<string>, today: string): Pro
         body: JSON.stringify({
           source_type: "url",
           source_url: c.url,
-          raw_content: content ?? `${c.title}\n\n${c.blurb ?? ""}`.trim(),
+          raw_content: content?.text ?? `${c.title}\n\n${c.blurb ?? ""}`.trim(),
+          pdf_url: content?.pdfUrl,
           title: c.title,
           digest_date: today,
           digest_rank: 0,

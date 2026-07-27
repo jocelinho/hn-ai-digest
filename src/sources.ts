@@ -123,6 +123,8 @@ export interface PersonFeed {
   medium: PersonMedium;
   /** 2 = Jocelin 點名必追；1 = 推薦名單。搶 PEOPLE_COUNT 名額時高者優先。 */
   priority: 1 | 2;
+  /** Person has no usable feed — scrape instead of fetching `url` as RSS/Atom. */
+  scraper?: () => Promise<FeedEntry[]>;
 }
 
 // The people-watch roster. X/Twitter has no reliable free feed, so coverage is
@@ -132,7 +134,8 @@ export const PEOPLE_FEEDS: PersonFeed[] = [
   { person: "Andrej Karpathy", url: "https://karpathy.bearblog.dev/feed/", medium: "blog", priority: 2 },
   { person: "Andrej Karpathy", url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCXUPKJO5MZQN11PqgIvyuvQ", medium: "youtube", priority: 2 },
   { person: "Garry Tan", url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCIBgYfDjtWlbJhg--Z4sOgQ", medium: "youtube", priority: 2 },
-  { person: "Paul Graham", url: "http://www.aaronsw.com/2002/feeds/pgessays.rss", medium: "blog", priority: 2 },
+  // No feed exists — scraped from articles.html. See fetchPaulGrahamEssays().
+  { person: "Paul Graham", url: "https://paulgraham.com/articles.html", medium: "blog", priority: 2, scraper: fetchPaulGrahamEssays },
   { person: "Thariq Shihipar", url: "https://www.thariq.io/rss.xml", medium: "blog", priority: 2 },
   { person: "Dex Horthy", url: "https://humanlayer.substack.com/feed", medium: "newsletter", priority: 2 },
   // Mike Krieger: X-only, no feed — covered by PEOPLE_NAMES mention-boost.
@@ -301,14 +304,16 @@ export async function fetchHNComments(storyId: number, limit = 5): Promise<strin
 
 // ---------- RSS / Atom feeds ----------
 
+export type FeedEntry = { title: string; link: string; published: number; blurb?: string };
+
 function parseFeedField(block: string, tag: string): string {
   const m = block.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, "i"));
   return m ? decodeEntities(m[1]) : "";
 }
 
-function parseFeed(xml: string): { title: string; link: string; published: number; blurb?: string }[] {
+function parseFeed(xml: string): FeedEntry[] {
   const blocks = xml.match(/<(item|entry)\b[\s\S]*?<\/\1>/gi) ?? [];
-  const out: { title: string; link: string; published: number; blurb?: string }[] = [];
+  const out: FeedEntry[] = [];
   for (const b of blocks) {
     const title = parseFeedField(b, "title");
     // RSS: <link>url</link>. Atom: <link href="url" rel="alternate"/>.
@@ -412,6 +417,57 @@ export async function fetchEveryToCandidates(limit = 4): Promise<Candidate[]> {
       }
     }));
     return metas.filter((c): c is Candidate => c !== null);
+  } catch {
+    return [];
+  }
+}
+
+const PG_ARTICLES_URL = "https://paulgraham.com/articles.html";
+const PG_MONTHS = ["january", "february", "march", "april", "may", "june",
+  "july", "august", "september", "october", "november", "december"];
+/** Essays are dated by month only, so the guard has to tolerate a full month plus slack. */
+const PG_MAX_AGE_DAYS = 75;
+
+/**
+ * Paul Graham essays. He has no working feed — paulgraham.com/rss.html only
+ * points at Aaron Swartz's scraper, which carries no dates AND stopped updating
+ * in 2023, so the "undated feed ⇒ trust the top item" rule in
+ * collectPeopleCandidates served a 2023 essay as new (seen 2026-07-27).
+ * articles.html is the live list, newest first.
+ *
+ * Entries stay undated (published 0) so the top-item + D1 dedup path still
+ * decides when an essay surfaces. The month printed at the top of the essay
+ * page ("June 2026") is used only as a staleness guard, so a source that
+ * freezes again can't repeat that bug. Fail-open on an unparseable month: a
+ * stale essay would surface at most once, whereas failing closed would drop PG
+ * silently and forever. Fail-open on network errors too: returns [].
+ */
+export async function fetchPaulGrahamEssays(): Promise<FeedEntry[]> {
+  try {
+    const res = await fetch(PG_ARTICLES_URL, { headers: { "User-Agent": FETCH_UA }, signal: AbortSignal.timeout(10000) });
+    if (!res.ok) return [];
+    // Newest essay = first <a> whose child is text; the nav is <area>/<img> links.
+    const m = (await res.text()).match(/<a href="([a-z0-9_-]+\.html)">([^<]+)<\/a>/i);
+    if (!m) return [];
+    const link = `https://paulgraham.com/${m[1]}`;
+    const title = decodeEntities(m[2]).trim();
+    if (!title) return [];
+
+    let published = 0; // stays 0 — see the top-item rule in collectPeopleCandidates
+    try {
+      const page = await fetch(link, { headers: { "User-Agent": FETCH_UA }, signal: AbortSignal.timeout(10000) });
+      if (page.ok) {
+        // Essays open with "June 2026" right after the title.
+        const d = htmlToText(await page.text()).slice(0, 600)
+          .match(new RegExp(`\\b(${PG_MONTHS.join("|")})\\s+(\\d{4})\\b`, "i"));
+        if (d) {
+          const monthMs = Date.UTC(Number(d[2]), PG_MONTHS.indexOf(d[1].toLowerCase()), 1);
+          if (Date.now() - monthMs > PG_MAX_AGE_DAYS * 86400_000) return []; // source went stale
+        }
+      }
+    } catch { /* month check is best-effort; fall through and surface the essay */ }
+
+    return [{ title, link, published }];
   } catch {
     return [];
   }
@@ -529,10 +585,15 @@ export async function collectPeopleCandidates(excludeKeys: Set<string>): Promise
   const batches = await Promise.all(
     PEOPLE_FEEDS.map(async (f): Promise<Candidate[]> => {
       try {
-        const res = await fetch(f.url, { headers: { "User-Agent": FETCH_UA }, signal: AbortSignal.timeout(10000) });
-        if (!res.ok) return [];
-        const xml = await res.text();
-        return parseFeed(xml)
+        let entries: FeedEntry[];
+        if (f.scraper) {
+          entries = await f.scraper();
+        } else {
+          const res = await fetch(f.url, { headers: { "User-Agent": FETCH_UA }, signal: AbortSignal.timeout(10000) });
+          if (!res.ok) return [];
+          entries = parseFeed(await res.text());
+        }
+        return entries
           .slice(0, 10)
           // Dated entries must be inside the freshness window. Undated entries
           // (published=0, e.g. the PG essays scraper) only count via the feed's

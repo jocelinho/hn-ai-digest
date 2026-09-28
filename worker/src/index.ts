@@ -71,6 +71,7 @@ interface PeopleOut {
   ai_summary_zh?: string;
   blurb?: string;
   url: string; // what the Slack title links to (reader page, or origin for videos)
+  origin_url?: string; // the original post, shown as a separate link when url is the reader page
   reading_time?: number;
 }
 
@@ -265,6 +266,7 @@ async function collectPeople(env: Env, exclude: Set<string>, today: string): Pro
       ai_summary_zh: summaryZh,
       blurb: c.blurb,
       url: content && readerUrl ? readerUrl : c.url,
+      origin_url: c.url,
       reading_time: content ? readingTime : 0,
     });
   }
@@ -309,13 +311,20 @@ function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-/** Small grey metadata line: source · votes · comments · reading time · HN link. */
+/** Link to the original article, unless the title already points there. */
+function originLink(origin: string | undefined, titleUrl: string): string | null {
+  return origin && origin !== titleUrl ? `<${origin}|🔗 原文>` : null;
+}
+
+/** Small grey metadata line: source · votes · comments · reading time · original · HN link. */
 function metaLine(a: TimelyOut): string {
   const parts: string[] = [];
   if (a.sourceLabel) parts.push(esc(a.sourceLabel));
   if (a.score != null) parts.push(`⬆︎ ${a.score}`);
   if (a.comments != null) parts.push(`💬 ${a.comments}`);
   if (a.reading_time) parts.push(`📖 ${a.reading_time} min`);
+  const origin = originLink(a.origin_url, a.article_reader_url);
+  if (origin) parts.push(origin);
   if (a.hnUrl) parts.push(`<${a.hnUrl}|HN 討論>`);
   return parts.length ? parts.join("   ·   ") : "—";
 }
@@ -352,6 +361,8 @@ function slackBlocks(timely: TimelyOut[], people: PeopleOut[], evergreen: Evergr
       });
       const meta: string[] = [esc(p.person), PERSON_MEDIUM_LABEL[p.medium] ?? p.medium];
       if (p.reading_time) meta.push(`📖 ${p.reading_time} min`);
+      const origin = originLink(p.origin_url, p.url);
+      if (origin) meta.push(origin);
       blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: meta.join("   ·   ") }] });
     }
   }
@@ -439,6 +450,7 @@ async function runDigest(env: Env, force = false): Promise<{ status: string; tim
         ai_summary: i.ai_summary ?? "",
         ai_summary_zh: i.ai_summary_zh ?? undefined,
         url: (isVideoish ? i.source_url : i.article_reader_url) ?? i.article_reader_url,
+        origin_url: i.source_url ?? undefined,
         reading_time: isVideoish ? 0 : i.reading_time ?? 0,
       }];
     });

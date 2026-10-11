@@ -27,6 +27,8 @@ export const MAX_PER_SOURCE = 2;
 /** People-watch layer: max picks per digest, and how far back a post counts as "new". */
 export const PEOPLE_COUNT = 3;
 export const PEOPLE_MAX_AGE_HOURS = 76;
+/** Below this, HN points are noise — fall back to newest when picking a person's post. */
+export const PEOPLE_HN_MIN_POINTS = 10;
 
 // Expanded AI/tech keyword set — companies, products, and concepts. Matched
 // case-insensitively against titles. Word-boundary forms avoid false positives
@@ -63,6 +65,7 @@ export function matchesAI(title: string): boolean {
 export const PEOPLE_NAMES = [
   "karpathy", "paul graham", "garry tan", "mike krieger", "thariq",
   "dex horthy", "dexter horthy", "humanlayer", "12-factor agents",
+  "geoffrey huntley", "ghuntley",
   "simon willison", "\\bswyx\\b", "latent space", "lilian weng",
   "sam altman", "dwarkesh", "ethan mollick", "ben thompson", "stratechery",
 ];
@@ -138,6 +141,7 @@ export const PEOPLE_FEEDS: PersonFeed[] = [
   { person: "Paul Graham", url: "https://paulgraham.com/articles.html", medium: "blog", priority: 2, scraper: fetchPaulGrahamEssays },
   { person: "Thariq Shihipar", url: "https://www.thariq.io/rss.xml", medium: "blog", priority: 2 },
   { person: "Dex Horthy", url: "https://humanlayer.substack.com/feed", medium: "newsletter", priority: 2 },
+  { person: "Geoffrey Huntley", url: "https://ghuntley.com/rss/", medium: "blog", priority: 2 },
   // Mike Krieger: X-only, no feed — covered by PEOPLE_NAMES mention-boost.
   { person: "Simon Willison", url: "https://simonwillison.net/atom/entries/", medium: "blog", priority: 1 },
   { person: "swyx", url: "https://www.latent.space/feed", medium: "newsletter", priority: 1 },
@@ -276,6 +280,32 @@ export async function fetchHNCandidates(): Promise<Candidate[]> {
   } catch {
     return [];
   }
+}
+
+/**
+ * HN points for one host's recent submissions, keyed by dedupKey(url). One
+ * request per host; a URL submitted several times keeps its best score.
+ */
+async function fetchHNTraction(host: string, sinceSec: number): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  try {
+    const qs = new URLSearchParams({
+      query: host,
+      restrictSearchableAttributes: "url",
+      tags: "story",
+      hitsPerPage: "50",
+      numericFilters: `created_at_i>${sinceSec}`,
+    });
+    const res = await fetch(`${ALGOLIA}?${qs}`, { signal: AbortSignal.timeout(10000) });
+    if (!res.ok) return out;
+    const data = (await res.json()) as { hits?: any[] };
+    for (const h of data.hits ?? []) {
+      if (!h.url) continue;
+      const key = dedupKey(h.url as string);
+      out.set(key, Math.max(out.get(key) ?? 0, h.points ?? 0));
+    }
+  } catch { /* no signal — caller falls back to newest */ }
+  return out;
 }
 
 // HN comment fallback (Firebase) — used when an article body won't fetch.
@@ -575,8 +605,10 @@ export async function collectEvergreenCandidates(excludeKeys: Set<string>): Prom
  * Collect the 👤 people layer: fresh posts from followed people's own channels.
  * Rules: only posts within PEOPLE_MAX_AGE_HOURS (cross-day dedup via excludeKeys
  * stops repeats anyway — the window is a backstop for the very first runs), at
- * most one item per person per digest, Jocelin's named people (priority 2) win
- * contested slots, then fresher first, capped at PEOPLE_COUNT.
+ * most one item per person per digest — when a person has several fresh posts
+ * the one with the most HN traction wins, newest as fallback — Jocelin's named
+ * people (priority 2) win contested slots, then fresher first, capped at
+ * PEOPLE_COUNT.
  */
 export async function collectPeopleCandidates(excludeKeys: Set<string>): Promise<Candidate[]> {
   const nowSec = Math.floor(Date.now() / 1000);
@@ -622,19 +654,36 @@ export async function collectPeopleCandidates(excludeKeys: Set<string>): Promise
   const priorityOf = (person: string): number =>
     Math.max(...PEOPLE_FEEDS.filter((f) => f.person === person).map((f) => f.priority));
 
-  const fresh = batches
-    .flat()
-    .filter((c) => !excludeKeys.has(c.dedupId))
-    .sort((a, b) =>
-      priorityOf(b.person!) - priorityOf(a.person!) || b.publishedAt - a.publishedAt);
+  const fresh = batches.flat().filter((c) => !excludeKeys.has(c.dedupId));
 
-  const perPerson = new Set<string>();
-  const picked: Candidate[] = [];
+  // Prolific people (several fresh posts at once): rank their posts by HN
+  // traction so the slot goes to the most worthwhile one, not just the latest.
+  const perPersonCount = new Map<string, number>();
+  for (const c of fresh) perPersonCount.set(c.person!, (perPersonCount.get(c.person!) ?? 0) + 1);
+  const hosts = new Set<string>();
   for (const c of fresh) {
-    if (picked.length >= PEOPLE_COUNT) break;
-    if (perPerson.has(c.person!)) continue;
-    perPerson.add(c.person!);
-    picked.push(c);
+    if (perPersonCount.get(c.person!)! < 2 || c.medium === "youtube") continue;
+    try { hosts.add(new URL(c.url).hostname.replace(/^www\./i, "")); } catch { /* skip */ }
   }
-  return picked;
+  const traction = new Map<string, number>();
+  for (const m of await Promise.all([...hosts].map((h) => fetchHNTraction(h, minPublished)))) {
+    for (const [k, v] of m) traction.set(k, v);
+  }
+  const worth = (c: Candidate): number => {
+    const points = traction.get(c.dedupId) ?? 0;
+    return points >= PEOPLE_HN_MIN_POINTS ? points : 0;
+  };
+
+  const best = new Map<string, Candidate>();
+  for (const c of fresh) {
+    const cur = best.get(c.person!);
+    if (!cur || worth(c) > worth(cur) || (worth(c) === worth(cur) && c.publishedAt > cur.publishedAt)) {
+      best.set(c.person!, c);
+    }
+  }
+
+  return [...best.values()]
+    .sort((a, b) =>
+      priorityOf(b.person!) - priorityOf(a.person!) || b.publishedAt - a.publishedAt)
+    .slice(0, PEOPLE_COUNT);
 }

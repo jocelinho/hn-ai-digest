@@ -385,7 +385,7 @@ function slackBlocks(timely: TimelyOut[], people: PeopleOut[], evergreen: Evergr
   blocks.push({ type: "divider" });
   blocks.push({
     type: "context",
-    elements: [{ type: "mrkdwn", text: "🤖 via hn-ai-digest · HN · OpenAI · TechCrunch · The Verge · Ars · every.to · 13 位大佬追蹤" }],
+    elements: [{ type: "mrkdwn", text: "🤖 via hn-ai-digest · HN · OpenAI · TechCrunch · The Verge · Ars · every.to · 14 位大佬追蹤" }],
   });
   // Top-level text is the mobile/lock-screen notification preview.
   return { text: `🗞️ 今日 AI・科技新聞 ${date} ${MENTION}`, blocks };

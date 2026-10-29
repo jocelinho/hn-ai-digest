@@ -30,7 +30,21 @@ import {
   dedupKey,
 } from "./src/sources";
 
-const ARTICLE_READER_API = process.env.ARTICLE_READER_API ?? "https://tech-news.jocelinho.com";
+// No default: point this at your own Article Reader deployment. Writes need its
+// WRITE_TOKEN (POST /api/article spends Anthropic credit on the server side).
+const ARTICLE_READER_API = process.env.ARTICLE_READER_API;
+const ARTICLE_READER_TOKEN = process.env.ARTICLE_READER_TOKEN;
+if (!ARTICLE_READER_API || !ARTICLE_READER_TOKEN) {
+  console.error(
+    "Set ARTICLE_READER_API (your Article Reader deployment URL) and ARTICLE_READER_TOKEN " +
+      "(its WRITE_TOKEN secret). See .env.example."
+  );
+  process.exit(1);
+}
+const WRITE_HEADERS = {
+  "Content-Type": "application/json",
+  Authorization: `Bearer ${ARTICLE_READER_TOKEN}`,
+};
 const DEDUP_WINDOW_DAYS = Number(process.env.HN_DIGEST_DEDUP_DAYS ?? 14);
 const MIN_COMMENTS_FOR_FALLBACK = 20;
 
@@ -112,7 +126,7 @@ async function collectPeople(exclude: Set<string>, today: string): Promise<Peopl
     try {
       const res = await fetch(`${ARTICLE_READER_API}/api/article`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: WRITE_HEADERS,
         body: JSON.stringify({
           source_type: "url",
           source_url: c.url,
@@ -191,7 +205,7 @@ async function postArticle(c: Candidate, content: FetchedArticle, today: string,
   try {
     const res = await fetch(`${ARTICLE_READER_API}/api/article`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: WRITE_HEADERS,
       body: JSON.stringify({
         source_type: "url",
         source_url: c.url,
@@ -330,7 +344,7 @@ async function main() {
     try {
       await fetch(`${ARTICLE_READER_API}/api/article`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: WRITE_HEADERS,
         body: JSON.stringify({
           source_type: "url",
           source_url: c.url,

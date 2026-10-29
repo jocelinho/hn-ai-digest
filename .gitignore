@@ -4,3 +4,5 @@ node_modules/
 *.db
 reprocess-*.ts
 news-with-cache.ts
+.env
+.env.local

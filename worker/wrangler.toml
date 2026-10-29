@@ -7,9 +7,11 @@ compatibility_date = "2026-01-01"
 crons = ["0 1 * * *"]
 
 [vars]
+# Forks: change to your own Article Reader deployment.
 ARTICLE_READER_API = "https://tech-news.jocelinho.com"
 HN_DIGEST_DEDUP_DAYS = "14"
 
 # Secrets (set via `wrangler secret put`, never committed):
 #   SLACK_WEBHOOK_URL  — the Slack incoming-webhook URL
 #   RUN_TOKEN          — token gating the manual-trigger HTTP endpoint
+#   ARTICLE_READER_TOKEN — bearer token for Article Reader writes (= its WRITE_TOKEN)

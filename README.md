@@ -63,12 +63,13 @@ bun install
 
 ### Configuration
 
-Works with zero config (stateless). Env vars (see `.env.example`):
+Stateless, but it needs your own Article Reader deployment. Env vars (see `.env.example`):
 
 | Var | Default | Purpose |
 |---|---|---|
 | `HN_AI_DIGEST_DIR` | — | Repo location (used by the Claude Code News skill to find this script); set per machine |
-| `ARTICLE_READER_API` | `https://tech-news.jocelinho.com` | Summarization + digest-state service base URL |
+| `ARTICLE_READER_API` | — (required) | Base URL of **your own** Article Reader deployment |
+| `ARTICLE_READER_TOKEN` | — (required) | Bearer token for `POST /api/article`; must match that deployment's `WRITE_TOKEN` secret |
 | `HN_DIGEST_DEDUP_DAYS` | `14` | How many days back to dedup against previously-picked stories |
 
 ### Usage
@@ -86,7 +87,8 @@ bun run fetch-news.ts --force
 ```bash
 cd worker
 bunx wrangler deploy                 # cron 0 1 * * * = 09:00 Asia/Taipei
-# secrets (never committed): SLACK_WEBHOOK_URL, RUN_TOKEN — set via `wrangler secret put`
+# secrets (never committed): SLACK_WEBHOOK_URL, RUN_TOKEN, ARTICLE_READER_TOKEN — set via `wrangler secret put`
+# set ARTICLE_READER_API in wrangler.toml to your own Article Reader deployment
 # manual trigger: curl "https://hn-news-slack.<subdomain>.workers.dev/?token=<RUN_TOKEN>&force=1"
 ```
 

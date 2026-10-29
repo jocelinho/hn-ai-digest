@@ -35,9 +35,14 @@ import {
 
 interface Env {
   ARTICLE_READER_API: string;
+  ARTICLE_READER_TOKEN: string;
   HN_DIGEST_DEDUP_DAYS: string;
   SLACK_WEBHOOK_URL: string;
   RUN_TOKEN: string;
+}
+
+function writeHeaders(env: Env): Record<string, string> {
+  return { "Content-Type": "application/json", Authorization: `Bearer ${env.ARTICLE_READER_TOKEN}` };
 }
 
 const MIN_COMMENTS_FOR_FALLBACK = 20;
@@ -131,7 +136,7 @@ async function postArticle(env: Env, c: Candidate, content: FetchedArticle, toda
   try {
     const res = await fetch(`${env.ARTICLE_READER_API}/api/article`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: writeHeaders(env),
       body: JSON.stringify({
         source_type: "url",
         source_url: c.url,
@@ -198,7 +203,7 @@ async function collectEvergreen(env: Env, exclude: Set<string>, today: string): 
     try {
       await fetch(`${env.ARTICLE_READER_API}/api/article`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: writeHeaders(env),
         body: JSON.stringify({
           source_type: "url",
           source_url: c.url,
@@ -235,7 +240,7 @@ async function collectPeople(env: Env, exclude: Set<string>, today: string): Pro
     try {
       const res = await fetch(`${env.ARTICLE_READER_API}/api/article`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: writeHeaders(env),
         body: JSON.stringify({
           source_type: "url",
           source_url: c.url,
